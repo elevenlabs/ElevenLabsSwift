@@ -374,12 +374,6 @@ public class ElevenLabsSDK {
         }
 
         public static func create(sampleRate: Double) async throws -> Input {
-            // Initialize the Audio Session
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
-            try audioSession.setPreferredSampleRate(sampleRate)
-            try audioSession.setActive(true)
-
             // Define the Audio Component
             var audioComponentDesc = AudioComponentDescription(
                 componentType: kAudioUnitType_Output,
@@ -549,12 +543,20 @@ public class ElevenLabsSDK {
         public let playerNode: AVAudioPlayerNode
         public let mixer: AVAudioMixerNode
         let audioQueue: DispatchQueue
+        let audioFormat: AVAudioFormat
 
-        private init(engine: AVAudioEngine, playerNode: AVAudioPlayerNode, mixer: AVAudioMixerNode) {
+        private init(engine: AVAudioEngine, playerNode: AVAudioPlayerNode, mixer: AVAudioMixerNode, audioFormat: AVAudioFormat) {
             self.engine = engine
             self.playerNode = playerNode
             self.mixer = mixer
+            self.audioFormat = audioFormat
             audioQueue = DispatchQueue(label: "com.elevenlabs.audioQueue", qos: .userInteractive)
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleInterruption),
+                name: .AVAudioEngineConfigurationChange,
+                object: engine
+            )
         }
 
         public static func create(sampleRate: Double) async throws -> Output {
@@ -568,15 +570,27 @@ public class ElevenLabsSDK {
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false) else {
                 throw ElevenLabsError.failedToCreateAudioFormat
             }
-
             engine.connect(playerNode, to: mixer, format: format)
             engine.connect(mixer, to: engine.mainMixerNode, format: format)
 
-            return Output(engine: engine, playerNode: playerNode, mixer: mixer)
+            return Output(engine: engine, playerNode: playerNode, mixer: mixer, audioFormat: format)
         }
 
         public func close() {
             engine.stop()
+            // see AVAudioEngine documentation
+            playerNode.stop()
+        }
+        
+        public func startPlaying() throws {
+            try engine.start()
+            playerNode.play()
+        }
+        
+        @objc private func handleInterruption() throws {
+            engine.connect(playerNode, to: mixer, format: audioFormat)
+            engine.connect(mixer, to: engine.mainMixerNode, format: audioFormat)
+            try startPlaying()
         }
     }
 
@@ -749,13 +763,10 @@ public class ElevenLabsSDK {
             // Step 5: Initialize the Conversation
             let conversation = Conversation(connection: connection, input: input, output: output, callbacks: callbacks, clientTools: clientTools)
 
-            // Step 6: Start the AVAudioEngine
-            try output.engine.start()
+            // Step 6: Start playing audio
+            try output.startPlaying()
 
-            // Step 7: Start the player node
-            output.playerNode.play()
-
-            // Step 8: Start recording
+            // Step 7: Start recording
             conversation.startRecording()
 
             return conversation
@@ -1177,9 +1188,7 @@ public class ElevenLabsSDK {
         let audioSession = AVAudioSession.sharedInstance()
         do {
             // Configure for voice chat with minimum latency
-            try audioSession.setCategory(.playAndRecord,
-                                         mode: .voiceChat,
-                                         options: [.allowBluetooth])
+            try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
 
             // Set preferred IO buffer duration for lower latency
             try audioSession.setPreferredIOBufferDuration(0.005) // 5ms buffer
