@@ -667,6 +667,9 @@ public class ElevenLabsSDK {
         public var onModeChange: @Sendable (Mode) -> Void = { _ in }
         public var onVolumeUpdate: @Sendable (Float) -> Void = { _ in }
 
+        /// A callback that receives the updated RMS level of the output audio
+        public var onOutputVolumeUpdate: @Sendable (Float) -> Void = { _ in }
+
         /// A callback that informs about a message correction.
         /// - Parameters:
         ///   - original: The original message. (Type: `String`)
@@ -785,6 +788,25 @@ public class ElevenLabsSDK {
                 guard let self = self else { return }
                 if finished {
                     self.updateMode(.listening)
+                }
+            }
+
+            /// Installs a tap on the output to calculate and report the RMS audio level
+            let intervalFrames = AVAudioFrameCount(Double(connection.sampleRate) * Constants.volumeUpdateInterval)
+            output.mixer.installTap(onBus: 0, bufferSize: intervalFrames, format: output.audioFormat) { buffer, _ in
+                guard let floatChan = buffer.floatChannelData?[0] else { return }
+                let frameCount = Int(buffer.frameLength)
+
+                // simple RMS
+                var sumSq: Float = 0
+                for i in 0 ..< frameCount {
+                    let s = floatChan[i]
+                    sumSq += s * s
+                }
+                let rms = sqrt(sumSq / Float(frameCount))
+
+                DispatchQueue.main.async {
+                    self.callbacks.onOutputVolumeUpdate(rms)
                 }
             }
 
